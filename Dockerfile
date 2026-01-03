@@ -1,7 +1,7 @@
 ###############################################################################
 # Stage 1: Download and prepare ChurchCRM
 ###############################################################################
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -22,12 +22,12 @@ RUN VERSION=$(curl -Is https://github.com/ChurchCRM/CRM/releases/latest | awk -F
     mv churchcrm /opt/churchcrm
 
 ###############################################################################
-# Stage 2: Final runtime image
+# Stage 2: Final runtime image with PHP 8.3 (Ubuntu 24.04)
 ###############################################################################
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 LABEL maintainer="feproappdev"
-LABEL description="ChurchCRM - All-in-one Docker image with Apache, PHP, and MariaDB"
+LABEL description="ChurchCRM - All-in-one Docker image with Apache, PHP 8.3, and MariaDB"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -37,7 +37,7 @@ ENV DATABASE_NAME=churchcrm \
     DATABASE_PASSWORD=churchcrm_password \
     DATABASE_ROOT_PASSWORD=root_password
 
-# Install all required packages
+# Install all required packages (Ubuntu 24.04 has PHP 8.3)
 RUN apt-get update && apt-get install -y \
     apache2 \
     curl \
@@ -49,7 +49,6 @@ RUN apt-get update && apt-get install -y \
     php-bcmath \
     php-cli \
     php-curl \
-    php-dev \
     php-gd \
     php-intl \
     php-mbstring \
@@ -63,7 +62,8 @@ RUN apt-get update && apt-get install -y \
 
 # Get PHP version for config path
 RUN PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;') && \
-    echo "PHP_VERSION=$PHP_VERSION" > /etc/environment
+    echo "PHP_VERSION=$PHP_VERSION" > /etc/environment && \
+    echo "Installed PHP version: $PHP_VERSION"
 
 # Copy ChurchCRM from builder stage
 COPY --from=builder /opt/churchcrm /var/www/html/churchcrm
@@ -184,9 +184,9 @@ VOLUME ["/var/lib/mysql", "/var/www/html/churchcrm"]
 # Expose HTTP port
 EXPOSE 80
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost/ || exit 1
+# No health check - let Coolify manage it
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+#     CMD curl -f http://localhost/ || exit 1
 
 # Start everything
 CMD ["/usr/local/bin/startup.sh"]
