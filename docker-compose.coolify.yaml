@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  hubchurch:
+    build:
+      context: .
+      dockerfile: Dockerfile.coolify
+    image: ${DOCKER_REGISTRY:-}hubchurch:${TAG:-latest}
+    ports:
+      - "80:80"
+    environment:
+      # Database settings - connect to the mariadb service
+      DATABASE_HOST: mariadb
+      DATABASE_NAME: ${DATABASE_NAME:-churchcrm}
+      DATABASE_USER: ${DATABASE_USER:-churchcrm}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-changeme}
+      # Application settings
+      APP_URL: ${APP_URL:-http://localhost}
+      DEBUG_MODE: ${DEBUG_MODE:-false}
+      FORCE_CONFIG_REGENERATION: ${FORCE_CONFIG_REGENERATION:-false}
+      # Mail settings (optional)
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_AUTH: ${SMTP_AUTH:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-support@example.com}
+    volumes:
+      - hubchurch_images:/var/www/html/Images
+      - hubchurch_attachments:/var/www/html/tmp_attach
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    networks:
+      - coolify-overlay
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+
+  mariadb:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DATABASE_ROOT_PASSWORD:-rootpassword}
+      MARIADB_DATABASE: ${DATABASE_NAME:-churchcrm}
+      MARIADB_USER: ${DATABASE_USER:-churchcrm}
+      MARIADB_PASSWORD: ${DATABASE_PASSWORD:-changeme}
+    volumes:
+      - mariadb_data:/var/lib/mysql
+      # Initialize with demo data (optional)
+      - ./demo:/docker-entrypoint-initdb.d:ro
+    networks:
+      - coolify-overlay
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 10
+
+volumes:
+  mariadb_data:
+  hubchurch_images:
+  hubchurch_attachments:
+
+networks:
+  coolify-overlay:
+    external: true

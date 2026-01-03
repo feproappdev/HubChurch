@@ -1,0 +1,141 @@
+# Production Dockerfile for ChurchCRM (HubChurch fork)
+# For use with Coolify and Docker Swarm
+# Uses external database - set DATABASE_HOST, DATABASE_NAME, etc via environment variables
+
+FROM php:8.3-apache
+
+LABEL maintainer="feproappdev"
+LABEL description="HubChurch (ChurchCRM fork) - Production ready"
+
+# Install PHP extensions and dependencies
+RUN apt-get update && apt-get install -y \
+    libxml2-dev \
+    gettext \
+    locales \
+    locales-all \
+    libpng-dev \
+    libzip-dev \
+    libfreetype6-dev \
+    libjpeg-dev \
+    libicu-dev \
+    curl \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PHP extensions required by ChurchCRM
+RUN docker-php-ext-install -j$(nproc) xml exif pdo_mysql gettext iconv mysqli zip intl && \
+    docker-php-ext-configure gd --with-freetype --with-jpeg && \
+    docker-php-ext-install -j$(nproc) gd
+
+# Configure Apache
+RUN a2enmod rewrite headers
+
+# Configure PHP for production
+RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini" && \
+    sed -i 's/^upload_max_filesize.*$/upload_max_filesize = 100M/g' $PHP_INI_DIR/php.ini && \
+    sed -i 's/^post_max_size.*$/post_max_size = 100M/g' $PHP_INI_DIR/php.ini && \
+    sed -i 's/^memory_limit.*$/memory_limit = 512M/g' $PHP_INI_DIR/php.ini && \
+    sed -i 's/^max_execution_time.*$/max_execution_time = 300/g' $PHP_INI_DIR/php.ini && \
+    echo "date.timezone = UTC" >> $PHP_INI_DIR/php.ini
+
+# Set working directory
+WORKDIR /var/www/html
+
+# Copy application source code
+COPY src/ /var/www/html/
+
+# Copy Apache configuration
+COPY docker/apache/default.conf /etc/apache2/apache2.conf
+
+# Install Composer for dependency management
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+# Install PHP dependencies
+RUN cd /var/www/html && \
+    composer install --no-dev --optimize-autoloader --no-interaction || true
+
+# Set proper permissions
+RUN chown -R www-data:www-data /var/www/html && \
+    chmod -R 755 /var/www/html && \
+    # Create directories that need to be writable
+    mkdir -p /var/www/html/Images/Family && \
+    mkdir -p /var/www/html/Images/Person && \
+    mkdir -p /var/www/html/tmp_attach && \
+    chown -R www-data:www-data /var/www/html/Images && \
+    chown -R www-data:www-data /var/www/html/tmp_attach
+
+# Create entrypoint script for runtime configuration
+RUN cat > /usr/local/bin/docker-entrypoint.sh << 'ENTRYPOINT'
+#!/bin/bash
+set -e
+
+# Generate Config.php from environment variables if not exists
+CONFIG_FILE="/var/www/html/Include/Config.php"
+
+if [ ! -f "$CONFIG_FILE" ] || [ "$FORCE_CONFIG_REGENERATION" = "true" ]; then
+    echo "Generating Config.php from environment variables..."
+    cat > "$CONFIG_FILE" << EOF
+<?php
+// Database connection settings
+\$sDSN = 'mysql:host=${DATABASE_HOST:-database};dbname=${DATABASE_NAME:-churchcrm}';
+\$sUSER = '${DATABASE_USER:-churchcrm}';
+\$sPASSWORD = '${DATABASE_PASSWORD:-changeme}';
+
+// Root path of ChurchCRM installation
+\$sRootPath = '';
+\$sRootDocument = '/var/www/html';
+
+// URL settings
+\$sURL = '${APP_URL:-http://localhost}';
+
+// Debug mode (set to true for development)
+\$debug = ${DEBUG_MODE:-false};
+
+// Mail settings
+\$sSMTPHost = '${SMTP_HOST:-localhost}';
+\$sSMTPAuth = ${SMTP_AUTH:-false};
+\$sSMTPUser = '${SMTP_USER:-}';
+\$sSMTPPass = '${SMTP_PASSWORD:-}';
+
+// Support email
+\$sSupportEmail = '${SUPPORT_EMAIL:-support@example.com}';
+EOF
+    chown www-data:www-data "$CONFIG_FILE"
+    echo "Config.php generated successfully"
+fi
+
+# Wait for database to be ready (if using external database)
+if [ -n "$DATABASE_HOST" ] && [ "$DATABASE_HOST" != "localhost" ]; then
+    echo "Waiting for database at $DATABASE_HOST..."
+    max_tries=30
+    counter=0
+    until php -r "new PDO('mysql:host=$DATABASE_HOST;dbname=$DATABASE_NAME', '$DATABASE_USER', '$DATABASE_PASSWORD');" 2>/dev/null; do
+        counter=$((counter + 1))
+        if [ $counter -ge $max_tries ]; then
+            echo "Warning: Could not connect to database after $max_tries attempts, starting anyway..."
+            break
+        fi
+        echo "Database not ready yet, waiting... ($counter/$max_tries)"
+        sleep 2
+    done
+    echo "Database connection established!"
+fi
+
+# Start Apache
+exec apache2-foreground
+ENTRYPOINT
+
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Create volume mount points for persistent data
+VOLUME ["/var/www/html/Images", "/var/www/html/tmp_attach"]
+
+# Expose HTTP port
+EXPOSE 80
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost/ || exit 1
+
+# Start with our entrypoint
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
